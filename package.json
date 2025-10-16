@@ -1,0 +1,17 @@
+{
+  "name": "vedic-horoscope-vercel",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "13.4.14",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "luxon": "^3.3.0",
+    "astronomy-engine": "^2.2.0"
+  }
+}
