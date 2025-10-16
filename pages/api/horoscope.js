@@ -1,41 +1,59 @@
-﻿import { DateTime } from "luxon";
+import { DateTime } from "luxon";
 import * as Astronomy from "astronomy-engine";
 
-/*
- API: /api/horoscope
- - auto-detects visitor IP via headers (Vercel provides x-forwarded-for)
- - uses ipapi.co to get lat/lon/timezone
- - computes Sun and Moon longitudes using astronomy-engine
- - calculates Tithi and Nakshatra
- - generates Bengali narrative horoscopes for all 12 signs in your style
- - returns JSON like:
-   {
-     "date":"16/10/2025",
-     "horoscope": {
-       "à¦®à§‡à¦·": { "text": "...", "health": "...", "advice": "..." },
-       ...
-     },
-     "location": { city, region, country, lat, lon, timeZone }
-   }
-*/
+export const runtime = "nodejs"; // ensure compatibility on Vercel
 
-async function fetchGeo(ip) {
-  try {
-    const res = await fetch(`https://ipapi.co/${ip}/json/`);
-    if (!res.ok) throw new Error("geo lookup failed");
-    return await res.json();
-  } catch (e) {
-    return null;
-  }
-}
+// Bengali Zodiac signs
+const SIGNS = [
+  "মেষ","বৃষ","মিথুন","কর্কট","সিংহ","কন্যা",
+  "তুলা","বৃশ্চিক","ধনু","মকর","কুম্ভ","মীন"
+];
 
-// Simple deterministic PRNG from seed string (xorshift-ish)
+// Phrase templates
+const TEMPLATES = {
+  lead: [
+    "আজ আপনার সৃজনশীল শক্তি জাগ্রত হবে। নতুন আইডিয়াকে প্রশংসা করা হতে পারে।",
+    "আজ ধৈর্য ও বিচক্ষণতা কাজে দেবে—একটি বড় সিদ্ধান্ত আসতে পারে।",
+    "আজ আপনার মন কর্মে একাগ্র থাকবে; নতুন পরিকল্পনা সফল মিলবে।",
+    "আজ সম্পর্কের চেষ্টায় বিশেষ ফলদায়ক হতে পারে।",
+    "আত্মবিশ্লেষণ ও শ্রদ্ধা আজ বিশেষ ফল দেবে।"
+  ],
+  health: [
+    "গলা ও শ্বাসনালার যত্নে স্বাস্থ্য ভালো থাকবে।",
+    "হজম বা পেটের সমস্যা এড়াতে খাবার খান পরিমিতভাবে।",
+    "চোখ ও মাথাব্যথা এড়াতে পর্যাপ্ত বিশ্রাম নিন।",
+    "হাঁটা বা যোগব্যায়াম আপনাকে সতেজ রাখবে।",
+    "পর্যাপ্ত পানি পান করুন ও শরীরচর্চা বজায় রাখুন।"
+  ],
+  advice: [
+    "নিজের সময় দিন, বিশ্রামও প্রয়োজনীয়।",
+    "নতুন আইডিয়াকে নোট করে রাখুন, কাজে লাগবে।",
+    "পরিবারের সঙ্গে সময় কাটান।",
+    "ভালো সিদ্ধান্ত নিতে তাড়াহুড়ো করবেন না।",
+    "সততা ও মনোযোগ আজ সফলতার চাবিকাঠি।"
+  ]
+};
+
+const NAKSHATRA_DESC = {
+  "অশ্বিনী": "শুরু করার শক্তি ও তেজ বৃদ্ধি পাবে।",
+  "ভরণী": "সৃজনশীল কাজে সাফল্য আসতে পারে।",
+  "কৃত্তিকা": "অস্থিরতা এড়িয়ে স্থির মনোযোগ রাখুন।",
+  "রোহিণী": "সম্পর্ক ও প্রেমে শান্তি বজায় রাখুন।",
+  "মৃগশিরা": "উৎসাহে দিনটি ভরপুর থাকবে।",
+  "আর্দ্রা": "অভ্যন্তরীণ শান্তির সন্ধান পাবেন।",
+  "পুনর্বসু": "ভালো কাজের ফল পাবেন।",
+  "পুষ্যা": "সম্মান ও স্বীকৃতি আসবে।",
+  "অশ্লেষা": "গোপন বিষয়ে আজ সতর্ক থাকুন।",
+  "মঘা": "নেতৃত্বের ক্ষমতা প্রকাশ পাবে।"
+};
+
+// Deterministic RNG (so same sign/date gives same result)
 function seededRandom(seedStr) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < seedStr.length; i++) {
     h = Math.imul(h ^ seedStr.charCodeAt(i), 16777619) >>> 0;
   }
-  return function() {
+  return () => {
     h += 0x6D2B79F5;
     let t = Math.imul(h ^ (h >>> 15), 1 | h);
     t = t + Math.imul(t ^ (t >>> 7), 61 | t) ^ t;
@@ -43,135 +61,90 @@ function seededRandom(seedStr) {
   };
 }
 
-// Bengali zodiac signs
-const SIGNS = [
-  "à¦®à§‡à¦·","à¦¬à§ƒà¦·","à¦®à¦¿à¦¥à§à¦¨","à¦•à¦°à§à¦•à¦Ÿ","à¦¸à¦¿à¦‚à¦¹","à¦•à¦¨à§à¦¯à¦¾",
-  "à¦¤à§à¦²à¦¾","à¦¬à§ƒà¦¶à§à¦šà¦¿à¦•","à¦§à¦¨à§","à¦®à¦•à¦°","à¦•à§à¦®à§à¦­","à¦®à§€à¦¨"
-];
-
-// Small library of template phrases in Bengali (to be combined to your narrative style)
-const TEMPLATES = {
-  lead: [
-    "à¦†à¦œ à¦†à¦ªà¦¨à¦¾à¦° à¦¸à§ƒà¦œà¦¨à¦¶à§€à¦² à¦¶à¦•à§à¦¤à¦¿ à¦œà¦¾à¦—à§à¦°à¦¤ à¦¹à¦¬à§‡à¥¤ à¦…à¦¨à§‡à¦•à§‡à¦‡ à¦†à¦ªà¦¨à¦¾à¦° à¦¨à¦¤à§à¦¨ à¦†à¦‡à¦¡à¦¿à§Ÿà¦¾à¦•à§‡ à¦ªà§à¦°à¦¶à¦‚à¦¸à¦¾ à¦•à¦°à¦¬à§‡à¥¤",
-    "à¦†à¦œ à¦§à§ˆà¦°à§à¦¯ à¦“ à¦¬à¦¿à¦šà¦•à§à¦·à¦£à¦¤à¦¾ à¦•à¦¾à¦œà§‡ à¦¦à§‡à¦¬à§‡â€”à¦à¦•à¦Ÿà§ à¦¸à¦¾à¦¬à¦§à¦¾à¦¨ à¦¥à¦¾à¦•à§à¦¨, à¦¤à¦¬à§‡ à¦¸à§à¦¯à§‹à¦— à¦†à¦›à§‡à¥¤",
-    "à¦†à¦œ à¦†à¦ªà¦¨à¦¾à¦° à¦®à¦¨ à¦•à¦°à§à¦®à§‡ à¦à¦•à¦¾à¦—à§à¦° à¦¥à¦¾à¦•à¦¬à§‡; à¦¨à¦¤à§à¦¨ à¦¸à¦¿à¦¦à§à¦§à¦¾à¦¨à§à¦¤ à¦—à§à¦°à¦¹à¦£à§‡ à¦¸à¦¾à¦«à¦²à§à¦¯ à¦®à¦¿à¦²à¦¬à§‡à¥¤",
-    "à¦†à¦œ à¦¸à§à¦¬à¦¾à¦­à¦¾à¦¬à¦¿à¦•à§‡à¦° à¦šà§‡à¦¯à¦¼à§‡ à¦¬à§‡à¦¶à¦¿ à¦¯à§‹à¦—à¦¾à¦¯à§‹à¦— à¦˜à¦Ÿà¦¬à§‡â€”à¦®à¦¿à¦¥à¦¸à§à¦•à§à¦°à¦¿à¦¯à¦¼à¦¾ à¦«à¦²à¦¦à¦¾à¦¯à¦¼à¦• à¦¹à¦¬à§‡à¥¤",
-    "à¦†à¦¤à§à¦®à¦¬à¦¿à¦¶à§à¦²à§‡à¦·à¦£ à¦“ à¦¶à§ƒà¦™à§à¦–à¦²à¦¾ à¦†à¦œ à¦¬à¦¿à¦¶à§‡à¦· à¦«à¦² à¦¦à§‡à¦¬à§‡à¥¤"
-  ],
-  healthTips: [
-    "à¦—à¦²à¦¾ à¦“ à¦¶à§à¦¬à¦¾à¦¸à¦¨à¦¾à¦²à¦¾à§Ÿ à¦¹à¦¾à¦²à¦•à¦¾ à¦…à¦¸à§à¦¬à¦¿à¦§à¦¾ à¦¹à¦¤à§‡ à¦ªà¦¾à¦°à§‡ â€” à¦—à¦°à¦® à¦ªà¦¾à¦¨à§€à§Ÿ à¦¸à¦¹à¦¨à§€à§Ÿ à¦¹à¦¬à§‡à¥¤",
-    "à¦¹à¦œà¦® à¦¬à¦¾ à¦ªà§‡à¦Ÿà§‡à¦° à¦¸à¦®à¦¸à§à¦¯à¦¾ à¦à§œà¦¾à¦¤à§‡ à¦¹à¦¾à¦²à¦•à¦¾ à¦–à¦¾à¦¬à¦¾à¦° à¦–à¦¾à¦¨à¥¤",
-    "à¦šà§‹à¦– à¦“ à¦®à¦¾à¦¥à¦¾à§Ÿ à¦•à§à¦²à¦¾à¦¨à§à¦¤à¦¿ à¦à§œà¦¾à¦¤à§‡ à¦®à¦¾à¦à§‡à¦®à¦§à§à¦¯à§‡ à¦¬à¦¿à¦°à¦¤à¦¿ à¦¨à¦¿à¦¨à¥¤",
-    "à¦¹à¦¾à¦²à¦•à¦¾ à¦¬à§à¦¯à¦¾à¦¯à¦¼à¦¾à¦® à¦¬à¦¾ à¦¹à¦¾à¦à¦Ÿà¦¾ à¦¸à§à¦¬à¦¾à¦¸à§à¦¥à§à¦¯à¦•à§‡ à¦¸à§à¦¦à§ƒà§ à¦°à¦¾à¦–à¦¬à§‡à¥¤",
-    "à¦¬à¦¿à¦¶à§à¦°à¦¾à¦® à¦“ à¦ªà¦°à§à¦¯à¦¾à¦ªà§à¦¤ à¦ªà¦¾à¦¨à¦¿ à¦—à§à¦°à¦¹à¦£ à¦°à¦¾à¦–à§à¦¨à¥¤"
-  ],
-  adviceShort: [
-    "à¦¨à¦¿à¦œà§‡à¦° à¦¸à¦®à§Ÿ à¦¦à¦¿à¦¨, à¦¬à¦¿à¦¶à§à¦°à¦¾à¦®à§‡ à¦«à¦¾à¦à¦•à¦¿ à¦¨à¦¿à§Ÿà§‡ à¦•à¦¾à¦œ à¦•à¦°à§à¦¨à¥¤",
-    "à¦¨à¦¤à§à¦¨ à¦†à¦‡à¦¡à¦¿à§Ÿà¦¾à¦•à§‡ à¦¨à§‹à¦Ÿ à¦•à¦°à§‡ à¦°à¦¾à¦–à§à¦¨; à¦¸à¦¨à§à¦§à§à¦¯à¦¾à¦¯à¦¼ à¦ªà§à¦¨à¦°à§à¦¬à¦¿à¦¬à§‡à¦šà¦¨à¦¾ à¦•à¦°à§à¦¨à¥¤",
-    "à¦ªà¦°à¦¿à¦¬à¦¾à¦°à§‡à¦° à¦¸à¦¦à¦¸à§à¦¯à¦¦à§‡à¦° à¦¸à¦™à§à¦—à§‡ à¦¸à¦®à§Ÿ à¦•à¦¾à¦Ÿà¦¾à¦¨; à¦®à¦¨ à¦¶à¦¾à¦¨à§à¦¤ à¦¹à¦¬à§‡à¥¤",
-    "à¦…à¦°à§à¦¥-à¦¬à§à¦¯à¦¬à¦¸à§à¦¥à¦¾à¦¯à¦¼ à¦¸à¦¤à¦°à§à¦• à¦¥à¦¾à¦•à§à¦¨; à¦…à¦ªà§à¦°à¦¯à¦¼à§‹à¦œà¦¨à§€à¦¯à¦¼ à¦–à¦°à¦š à¦à¦¡à¦¼à¦¾à¦¨à¥¤",
-    "à¦—à¦­à§€à¦° à¦¶à§à¦¬à¦¾à¦¸ à¦¨à¦¿à¦¯à¦¼à§‡ à¦§à§à¦¯à¦¾à¦¨ à¦šà§‡à¦·à§à¦Ÿà¦¾ à¦•à¦°à§à¦¨â€”à¦®à¦¨à§‡ à¦¶à§€à¦¤à¦²à¦¤à¦¾ à¦†à¦¨à¦¬à§‡à¥¤"
-  ]
-};
-
-// Map some nakshatras/tithi to small flavor lines to influence narrative
-const NAK_FLAVOR = {
-  "à¦…à¦¶à§à¦¬à¦¿à¦¨à§€": "à¦¶à§à¦°à§ à¦•à¦°à¦¾à¦° à¦¶à¦•à§à¦¤à¦¿ à¦à¦¬à¦‚ à¦¤à¦¾à§œà¦¨à¦¾ à¦†à¦›à§‡à¥¤",
-  "à¦­à¦°à¦£à§€": "à¦¸à§ƒà¦œà¦¨à¦¶à§€à¦² à¦“ à¦¸à¦¹à¦®à¦°à§à¦®à¦¿à¦¤à¦¾à¦ªà§‚à¦°à§à¦£ à¦ªà¦°à¦¿à¦¬à§‡à¦¶à§‡ à¦¥à¦¾à¦•à¦¬à§‡à¦¨à¥¤",
-  "à¦•à§ƒà¦¤à§à¦¤à¦¿à¦•à¦¾": "à¦ªà¦°à¦¿à¦¶à§à¦°à¦®à§‡à¦° à¦«à¦² à¦†à¦œ à¦ªà§à¦°à¦¤à¦¿à¦«à¦²à¦¿à¦¤ à¦¹à¦¬à§‡à¥¤",
-  "à¦°à§‹à¦¹à¦¿à¦£à§€": "à¦ªà¦¾à¦°à¦¿à¦¬à¦¾à¦°à¦¿à¦• à¦®à§‡à¦²à¦¾à¦®à§‡à¦¶à¦¾ à¦à¦¬à¦‚ à¦¸à§à¦¨à§‡à¦¹ à¦¬à¦¾à¦¡à¦¼à¦¬à§‡à¥¤",
-  "à¦®à§ƒà¦—à¦¶à¦¿à¦°à¦¾": "à¦‰à§Žà¦¸à¦¾à¦¹ à¦“ à¦…à¦¨à§à¦¸à¦¨à§à¦§à¦¾à¦¨à¦¶à§€à¦²à¦¤à¦¾ à¦¬à¦¾à§œà¦¬à§‡à¥¤",
-  "à¦†à¦°à§à¦¦à§à¦°à¦¾": "à¦†à¦¬à§‡à¦— à¦“ à¦…à¦¨à§€à¦¹à¦¾ à¦®à¦¿à¦¶à§à¦° à¦…à¦¨à§à¦­à¦¬ à¦¹à¦¤à§‡ à¦ªà¦¾à¦°à§‡à¥¤",
-  "à¦ªà§à¦¨à¦°à§à¦¬à¦¸à§": "à¦¸à§à¦¥à¦¿à¦°à¦¤à¦¾ à¦“ à¦ªà§à¦¨à¦°à§à¦œà§à¦œà§€à¦¬à¦¨à§‡à¦° à¦¸à¦®à§Ÿà¥¤",
-  "à¦ªà§à¦·à§à¦¯à¦¾": "à¦¸à¦¹à¦¯à§‹à¦—à¦¿à¦¤à¦¾ à¦“ à¦¸à¦®à¦¯à¦¼à§‹à¦ªà¦¯à§‹à¦—à§€ à¦¸à¦¿à¦¦à§à¦§à¦¾à¦¨à§à¦¤ à¦—à§à¦°à¦¹à¦£ à¦¸à¦®à§à¦­à¦¬à¥¤",
-  "à¦…à¦¶à§à¦²à§‡à¦·à¦¾": "à¦¸à¦¤à¦°à§à¦•à¦¤à¦¾à¦° à¦¸à¦¾à¦¥à§‡ à¦¸à¦®à§à¦ªà¦°à§à¦• à¦¸à¦¾à¦®à¦²à¦¾à¦¨à¥¤",
-  "à¦®à¦˜à¦¾": "à¦¸à¦®à§à¦®à¦¾à¦¨ à¦“ à¦ªà§à¦°à¦¸à§à¦•à¦¾à¦°à§‡à¦° à¦¸à¦®à§à¦­à¦¾à¦¬à¦¨à¦¾ à¦†à¦›à§‡à¥¤"
-};
-
 function pick(rng, arr) {
   return arr[Math.floor(rng() * arr.length)];
 }
 
-export default async function handler(req, res) {
+// Fetch geolocation info
+async function fetchGeo(ip) {
   try {
-    // Get client IP (Vercel sets x-forwarded-for)
-    const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "8.8.8.8").split(",")[0].trim();
+    const res = await fetch(`https://ipapi.co/${ip}/json/`, { cache: "no-store" });
+    if (!res.ok) throw new Error("Geo lookup failed");
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+}
 
-    // Geo lookup
-    const geo = await fetchGeo(clientIp) || {};
-    const lat = geo.latitude || 28.6139;
-    const lon = geo.longitude || 77.2090;
-    const city = geo.city || "New Delhi";
-    const region = geo.region || "Delhi";
+export async function GET(req) {
+  try {
+    // Get IP (Vercel adds x-forwarded-for)
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "8.8.8.8";
+
+    // Get geolocation
+    const geo = await fetchGeo(ip) || {};
+    const lat = geo.latitude || 22.5726;
+    const lon = geo.longitude || 88.3639;
+    const city = geo.city || "Kolkata";
+    const region = geo.region || "West Bengal";
     const country = geo.country_name || "India";
-    const tz = req.query.tz || geo.timezone || "Asia/Kolkata";
+    const tz = geo.timezone || "Asia/Kolkata";
 
-    // Date/time in user's timezone
+    // Local date/time
     const now = DateTime.now().setZone(tz);
-    const isoDate = now.toISODate(); // YYYY-MM-DD
+    const isoDate = now.toISODate();
     const displayDate = now.toFormat("dd/MM/yyyy");
 
-    // Astronomy calculations (Sun, Moon longitudes)
-    const sunLon = Astronomy.EclipticLongitude("Sun", now.toJSDate());
-    const moonLon = Astronomy.EclipticLongitude("Moon", now.toJSDate());
+    // Astronomy: Sun and Moon longitudes
+    const sun = Astronomy.EclipticLongitude("Sun", now.toJSDate());
+    const moon = Astronomy.EclipticLongitude("Moon", now.toJSDate());
 
-    // Tithi calculation (each 12 degrees is a tithi)
-    const tithiIndex = Math.floor(((moonLon - sunLon + 360) % 360) / 12) + 1;
-
-    // Nakshatra calculation
-    const nakIndex = Math.floor((moonLon % 360) / (360 / 27));
+    const tithi = Math.floor(((moon - sun + 360) % 360) / 12) + 1;
+    const nakIndex = Math.floor((moon % 360) / (360 / 27));
     const nakshatras = [
-      "à¦…à¦¶à§à¦¬à¦¿à¦¨à§€","à¦­à¦°à¦£à§€","à¦•à§ƒà¦¤à§à¦¤à¦¿à¦•à¦¾","à¦°à§‹à¦¹à¦¿à¦£à§€","à¦®à§ƒà¦—à¦¶à¦¿à¦°à¦¾","à¦†à¦°à§à¦¦à§à¦°à¦¾",
-      "à¦ªà§à¦¨à¦°à§à¦¬à¦¸à§","à¦ªà§à¦·à§à¦¯à¦¾","à¦…à¦¶à§à¦²à§‡à¦·à¦¾","à¦®à¦˜à¦¾","à¦ªà§‚à¦°à§à¦¬à¦«à¦¾à¦²à§à¦—à§à¦¨à§€","à¦‰à¦¤à§à¦¤à¦°à¦«à¦¾à¦²à§à¦—à§à¦¨à§€",
-      "à¦¹à¦¸à§à¦¤à¦¾","à¦šà¦¿à¦¤à§à¦°à¦¾","à¦¸à§à¦¬à¦¾à¦¤à§€","à¦¬à¦¿à¦¶à¦¾à¦–à¦¾","à¦…à¦¨à§à¦°à¦¾à¦§à¦¾","à¦œà§à¦¯à§‡à¦·à§à¦ à¦¾",
-      "à¦®à§‚à¦²à¦¾","à¦ªà§‚à¦°à§à¦¬à¦¾à¦·à¦¾à¦¢à¦¼à¦¾","à¦‰à¦¤à§à¦¤à¦°à¦¾à¦·à¦¾à¦¢à¦¼à¦¾","à¦¶à§à¦°à¦¬à¦£à¦¾","à¦§à¦¨à¦¿à¦·à§à¦ à¦¾","à¦¶à¦¤à¦­à¦¿à¦·à¦¾",
-      "à¦ªà§‚à¦°à§à¦¬à¦­à¦¾à¦¦à§à¦°à¦ªà¦¦à¦¾","à¦‰à¦¤à§à¦¤à¦°à¦­à¦¾à¦¦à§à¦°à¦ªà¦¦à¦¾","à¦°à§‡à¦¬à¦¤à§€"
+      "অশ্বিনী","ভরণী","কৃত্তিকা","রোহিণী","মৃগশিরা","আর্দ্রা","পুনর্বসু","পুষ্যা","অশ্লেষা",
+      "মঘা","পূর্বফাল্গুনী","উত্তরফাল্গুনী","হস্তা","চিত্তা","স্বাতী","বিশাখা","অনুরাধা",
+      "জ্যেষ্ঠা","মূলা","পূর্বাষাঢ়া","উত্তরাষাঢ়া","শ্রবণা","ধনিষ্ঠা","শতভিষা","পূর্বভাদ্রপদ",
+      "উত্তরভাদ্রপদ","রেবতী"
     ];
     const nakshatra = nakshatras[nakIndex];
+    const flavor = NAKSHATRA_DESC[nakshatra] || "";
 
-    // Build horoscope per sign (deterministic per date and sign: use isoDate+sign seed)
+    // Generate horoscopes
     const horoscope = {};
-
-    for (let i = 0; i < SIGNS.length; i++) {
-      const sign = SIGNS[i];
-      const seed = `${isoDate}|${sign}`;
-      const rng = seededRandom(seed);
-
-      // Compose narrative in your style: lead + health + short advice
-      const lead = pick(rng, TEMPLATES.lead);
-      // flavor from nakshatra or tithi sometimes
-      const flavor = NAK_FLAVOR[nakshatra] ? NAK_FLAVOR[nakshatra] : "";
-      const health = pick(rng, TEMPLATES.healthTips);
-      const advice = pick(rng, TEMPLATES.adviceShort);
-
-      // Create multi-line text like your sample
-      const text = `${lead} ${flavor}`.trim();
-
+    for (const sign of SIGNS) {
+      const rng = seededRandom(`${isoDate}-${sign}`);
       horoscope[sign] = {
-        text: text,
-        health: health,
-        advice: advice,
-        tithi: `à¦¤à¦¿à¦¥à¦¿ ${tithiIndex}`,
-        nakshatra: nakshatra
+        text: `${pick(rng, TEMPLATES.lead)} ${flavor}`.trim(),
+        health: pick(rng, TEMPLATES.health),
+        advice: pick(rng, TEMPLATES.advice),
+        tithi: `তিথি ${tithi}`,
+        nakshatra
       };
     }
 
-    const out = {
-      date: displayDate,
-      location: { city, region, country, lat, lon, timeZone: tz },
-      sun_longitude: Number(sunLon.toFixed(6)),
-      moon_longitude: Number(moonLon.toFixed(6)),
-      tithi: tithiIndex,
-      nakshatra,
-      horoscope,
-      meta: { generatedAt: new Date().toISOString(), method: "astronomy-engine + deterministic templates" }
-    };
-
-    res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=3600");
-    return res.status(200).json(out);
-
+    return new Response(
+      JSON.stringify({
+        date: displayDate,
+        location: { city, region, country, lat, lon, timeZone: tz },
+        sun_longitude: Number(sun.toFixed(6)),
+        moon_longitude: Number(moon.toFixed(6)),
+        tithi,
+        nakshatra,
+        horoscope,
+        meta: {
+          generatedAt: new Date().toISOString(),
+          engine: "astronomy-engine + Luxon",
+          ip
+        }
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "s-maxage=900" }
+      }
+    );
   } catch (err) {
-    console.error("Horoscope API error:", err);
-    res.status(500).json({ error: "Failed to generate horoscope" });
+    console.error("Horoscope API Error:", err);
+    return new Response(JSON.stringify({ error: "Failed to generate horoscope" }), { status: 500 });
   }
 }
