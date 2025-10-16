@@ -2,7 +2,7 @@
   "name": "vercel-horoscope",
   "version": "1.0.0",
   "private": true,
-  "description": "Daily Vedic Horoscope generator with auto-location and API endpoint — Vercel ready Next.js app.",
+  "description": "Daily Vedic Horoscope generator with auto-location and API endpoint — built with Next.js and Luxon.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -15,7 +15,7 @@
     "axios": "^1.7.4",
     "luxon": "^3.5.0",
     "geoip-lite": "^1.4.6",
-    "@astronomyapi/astronomy-api": "^2.1.0"
+    "astronomia": "^2.4.1"
   },
   "engines": {
     "node": ">=18.0.0"
